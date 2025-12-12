@@ -1,0 +1,5 @@
+outs:
+- md5: 813020d2d0fffbbc2dfc25c0b3718fba
+  size: 1894629
+  hash: md5
+  path: extracted_principles.jsonl
