@@ -1,5 +1,5 @@
 import os
-import time
+import asyncio
 import json
 from groq import Groq
 from openai import OpenAI
@@ -75,25 +75,51 @@ class LLMInferenceClient:
         self.providers[provider].model_name = model_name
         print(f"[✓] Updated {provider} model to: {model_name}")
 
+    def _sync_hf_call(self, client, model_name, messages):
+        """Synchronous HuggingFace API call to be run in thread pool."""
+        return client.chat_completion(
+            model=model_name,
+            messages=messages,
+            temperature=0.0,
+            max_tokens=1024,
+            response_format={"type": "json_object"},
+        )
+
+    def _sync_groq_call(self, client, model_name, formatted_prompt):
+        """Synchronous Groq API call to be run in thread pool."""
+        return client.chat.completions.create(
+            messages=[{"role": "user", "content": formatted_prompt}],
+            model=model_name,
+            temperature=0.0,
+            response_format={"type": "json_object"},
+        )
+
+    def _sync_deepinfra_call(self, client, model_name, formatted_prompt):
+        """Synchronous DeepInfra API call to be run in thread pool."""
+        return client.chat.completions.create(
+            messages=[{"role": "user", "content": formatted_prompt}],
+            model=model_name,
+            temperature=0.0,
+            response_format={"type": "json_object"},
+        )
+
     async def hf_inference(
         self, feedback_text: str, prompt_template: str, provider: str = "hf"
     ) -> str:
-        """HuggingFace Inference API with exponential backoff."""
+        """HuggingFace Inference API with exponential backoff - truly async."""
         config = self._get_config(provider)
         client = self._get_hf_client(provider)
         formatted_prompt = prompt_template.format(feedback=feedback_text)
         messages = [{"role": "user", "content": formatted_prompt}]
 
         retries = 0
+        current_sleep = 5  # Initial sleep time for backoff
 
         while retries < config.max_retries:
             try:
-                response = client.chat_completion(
-                    model=config.model_name,
-                    messages=messages,
-                    temperature=0.0,  # Greedy decoding [cite: 92]
-                    max_tokens=1024,
-                    response_format={"type": "json_object"},  # Force JSON
+                # Run the blocking call in a thread pool to not block the event loop
+                response = await asyncio.to_thread(
+                    self._sync_hf_call, client, config.model_name, messages
                 )
                 return response.choices[0].message.content
 
@@ -106,7 +132,7 @@ class LLMInferenceClient:
                     print(
                         f"    Rate limit or Model loading. Sleeping {current_sleep}s..."
                     )
-                    time.sleep(current_sleep)
+                    await asyncio.sleep(current_sleep)  # Non-blocking sleep
                     current_sleep *= 2  # Exponential backoff
                     retries += 1
                 else:
@@ -120,7 +146,7 @@ class LLMInferenceClient:
     async def groq_inference(
         self, feedback_text: str, prompt_template: str, provider: str = "groq"
     ) -> Optional[str]:
-        """Groq API inference with retry logic."""
+        """Groq API inference with retry logic - truly async."""
         config = self._get_config(provider)
         client = self._get_groq_client(provider)
         formatted_prompt = prompt_template.format(feedback=feedback_text)
@@ -128,11 +154,9 @@ class LLMInferenceClient:
         retries = 0
         while retries < config.max_retries:
             try:
-                chat_completion = client.chat.completions.create(
-                    messages=[{"role": "user", "content": formatted_prompt}],
-                    model=config.model_name,
-                    temperature=0.0,
-                    response_format={"type": "json_object"},  # JSON mode
+                # Run the blocking call in a thread pool to not block the event loop
+                chat_completion = await asyncio.to_thread(
+                    self._sync_groq_call, client, config.model_name, formatted_prompt
                 )
                 return chat_completion.choices[0].message.content
 
@@ -143,7 +167,7 @@ class LLMInferenceClient:
                 # Rate Limit (Groq usually resets every minute)
                 if "429" in error_msg:
                     print("    Rate limit hit. Sleeping 60 seconds...")
-                    time.sleep(60)
+                    await asyncio.sleep(60)  # Non-blocking sleep
                     retries += 1
                 else:
                     return None  # Return None on hard error
@@ -153,7 +177,7 @@ class LLMInferenceClient:
     async def deepinfra_inference(
         self, feedback_text: str, prompt_template: str, provider: str = "deepinfra"
     ) -> Optional[str]:
-        """DeepInfra API inference with retry logic."""
+        """DeepInfra API inference with retry logic - truly async."""
         config = self._get_config(provider)
         client = self._get_deepinfra_client(provider)
         formatted_prompt = prompt_template.format(feedback=feedback_text)
@@ -161,11 +185,9 @@ class LLMInferenceClient:
         retries = 0
         while retries < config.max_retries:
             try:
-                chat_completion = client.chat.completions.create(
-                    messages=[{"role": "user", "content": formatted_prompt}],
-                    model=config.model_name,
-                    temperature=0.0,
-                    response_format={"type": "json_object"},  # JSON mode
+                # Run the blocking call in a thread pool to not block the event loop
+                chat_completion = await asyncio.to_thread(
+                    self._sync_deepinfra_call, client, config.model_name, formatted_prompt
                 )
                 return chat_completion.choices[0].message.content
 
@@ -176,7 +198,7 @@ class LLMInferenceClient:
                 # Rate Limit (DeepInfra usually resets every minute)
                 if "429" in error_msg:
                     print("    Rate limit hit. Sleeping 60 seconds...")
-                    time.sleep(60)
+                    await asyncio.sleep(60)  # Non-blocking sleep
                     retries += 1
                 else:
                     return None  # Return None on hard error
